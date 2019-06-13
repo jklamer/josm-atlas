@@ -1,46 +1,71 @@
 package org.openstreetmap.atlas;
 
+import static org.openstreetmap.josm.tools.I18n.tr;
+
 import java.awt.Graphics2D;
+import java.util.List;
+import java.util.ListIterator;
 
 import javax.swing.Action;
 import javax.swing.Icon;
 
+import org.openstreetmap.atlas.data.AtlasDataSet;
 import org.openstreetmap.atlas.geography.atlas.Atlas;
-import org.openstreetmap.josm.Main;
 import org.openstreetmap.josm.data.Bounds;
-import org.openstreetmap.josm.data.osm.DataSet;
+import org.openstreetmap.josm.data.osm.DataSelectionListener;
+import org.openstreetmap.josm.data.osm.OsmPrimitiveType;
+import org.openstreetmap.josm.data.osm.PrimitiveId;
+import org.openstreetmap.josm.data.osm.SimplePrimitiveId;
+import org.openstreetmap.josm.data.osm.event.SelectionEventManager;
 import org.openstreetmap.josm.data.osm.visitor.BoundingXYVisitor;
 import org.openstreetmap.josm.data.osm.visitor.paint.MapRendererFactory;
 import org.openstreetmap.josm.data.osm.visitor.paint.Rendering;
+import org.openstreetmap.josm.gui.MainApplication;
 import org.openstreetmap.josm.gui.MapView;
-import org.openstreetmap.josm.gui.layer.AbstractModifiableLayer;
+import org.openstreetmap.josm.gui.history.HistoryBrowserDialogManager;
+import org.openstreetmap.josm.gui.history.HistoryHook;
+import org.openstreetmap.josm.gui.layer.AbstractOsmDataLayer;
 import org.openstreetmap.josm.gui.layer.Layer;
+import org.openstreetmap.josm.gui.layer.MainLayerManager.ActiveLayerChangeEvent;
+import org.openstreetmap.josm.gui.layer.MainLayerManager.ActiveLayerChangeListener;
+import org.openstreetmap.josm.spi.preferences.Config;
 import org.openstreetmap.josm.tools.ImageProvider;
 
 /**
  * @author jgage
  */
-public class AtlasReaderLayer extends AbstractModifiableLayer
+public class AtlasReaderLayer extends AbstractOsmDataLayer
+        implements DataSelectionListener, ActiveLayerChangeListener, HistoryHook
 {
-    private static String LAYER_NAME = "Atlas Layer";
+    private static final String LAYER_NAME = tr("Atlas Layer");
+
+    private static final int NINE = 9;
+    private static final int TEN = 10;
 
     private Atlas atlas;
-    private final DataSet dataSet;
+    private AtlasDataSet data;
     private final Bounds bounds;
 
-    public AtlasReaderLayer(final String info, final DataSet data, final Atlas atlas,
+    public AtlasReaderLayer(final String info, final AtlasDataSet data, final Atlas atlas,
             final Bounds bounds)
     {
         super(info);
-        this.dataSet = data;
         this.atlas = atlas;
+        this.data = data;
         this.bounds = bounds;
+        data.addSelectionListener(this);
+        MainApplication.getLayerManager().addActiveLayerChangeListener(this);
+        HistoryBrowserDialogManager.addHistoryHook(this);
     }
 
     @Override
     public void destroy()
     {
+        HistoryBrowserDialogManager.removeHistoryHook(this);
+        MainApplication.getLayerManager().removeActiveLayerChangeListener(this);
+        data.removeSelectionListener(this);
         this.atlas = null;
+        this.data = null;
     }
 
     public Atlas getAtlas()
@@ -48,15 +73,16 @@ public class AtlasReaderLayer extends AbstractModifiableLayer
         return this.atlas;
     }
 
-    public DataSet getData()
+    @Override
+    public AtlasDataSet getDataSet()
     {
-        return this.dataSet;
+        return this.data;
     }
 
     @Override
     public Icon getIcon()
     {
-        return ImageProvider.get("dialogs", "world");
+        return new ImageProvider("dialogs/world").setSize(ImageProvider.ImageSizes.LAYER).get();
     }
 
     @Override
@@ -78,51 +104,74 @@ public class AtlasReaderLayer extends AbstractModifiableLayer
     }
 
     @Override
-    public boolean isMergable(final Layer arg0)
+    public boolean isMergable(final Layer other)
     {
         return false;
-    }
-
-    /**
-     * Atlas should be treated as immutable.
-     *
-     * @return Always false
-     */
-    @Override
-    public final boolean isModified()
-    {
-        return false;
-    }
-
-    /**
-     * We should not be able to merge layers.
-     *
-     * @param layer
-     *            The layer parameter is ignored
-     */
-    @Override
-    public void mergeFrom(final Layer layer)
-    {
-    }
-
-    /**
-     * Paints the dataSet comprised of the OSM equivalents of atlas objects.
-     */
-    @Override
-    public void paint(final Graphics2D graphics, final MapView mapView, final Bounds bounds)
-    {
-        final boolean active = mapView.getLayerManager().getActiveLayer() == this;
-        final boolean inactive = !active && Main.pref.getBoolean("draw.data.inactive_color", true);
-        final boolean virtual = !inactive && mapView.isVirtualNodesEnabled();
-        Main.pref.getBoolean("draw.data.inactive_color", false);
-        final Rendering painter = MapRendererFactory.getInstance().createActiveRenderer(graphics,
-                mapView, inactive);
-        painter.render(this.dataSet, virtual, bounds);
     }
 
     @Override
     public void visitBoundingBox(final BoundingXYVisitor visitor)
     {
         visitor.visit(this.bounds);
+    }
+
+    @Override
+    public void paint(final Graphics2D g2d, final MapView map, final Bounds bbox)
+    {
+        final boolean active = map.getLayerManager().getActiveLayer() == this;
+        final boolean inactive = !active
+                && Config.getPref().getBoolean("draw.data.inactive_color", true);
+        final boolean virtual = !inactive && map.isVirtualNodesEnabled();
+
+        final Rendering painter = MapRendererFactory.getInstance().createActiveRenderer(g2d, map,
+                inactive);
+        painter.render(data, virtual, bbox);
+    }
+
+    @Override
+    public boolean isModified()
+    {
+        return false;
+    }
+
+    @Override
+    public void mergeFrom(final Layer from)
+    {
+        // Do nothing
+    }
+
+    @Override
+    public void selectionChanged(final SelectionChangeEvent event)
+    {
+        invalidate();
+    }
+
+    @Override
+    public void modifyRequestedIds(final List<PrimitiveId> ids)
+    {
+        for (final ListIterator<PrimitiveId> iter = ids.listIterator(); iter.hasNext();)
+        {
+            final PrimitiveId pid = iter.next();
+            if (data.getPrimitiveById(pid) != null)
+            {
+                iter.set(new SimplePrimitiveId(
+                        Long.parseLong(String.valueOf(pid.getUniqueId()).substring(0,
+                                OsmPrimitiveType.NODE.equals(pid.getType()) ? TEN : NINE)),
+                        pid.getType()));
+            }
+        }
+    }
+
+    @Override
+    public void activeOrEditLayerChanged(final ActiveLayerChangeEvent e)
+    {
+        if (e.getSource().getActiveLayer() == AtlasReaderLayer.this)
+        {
+            data.addSelectionListener(SelectionEventManager.getInstance());
+        }
+        else
+        {
+            data.removeSelectionListener(SelectionEventManager.getInstance());
+        }
     }
 }

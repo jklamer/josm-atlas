@@ -1,38 +1,58 @@
-buildscript {
-    dependencies {
-        classpath 'com.diffplug.spotless:spotless-plugin-gradle:3.4.0'
-    }
-}
-
 plugins {
-    id "de.undercouch.download" version "3.2.0"
+    id 'org.openstreetmap.josm' version '0.3.4'
+    id 'com.diffplug.gradle.spotless' version '3.9.0'
     // Used to promote a staging release build
     // https://github.com/Codearte/gradle-nexus-staging-plugin
     // gradle closeAndReleaseRepository
-    id "io.codearte.nexus-staging" version "0.8.0"
+    id "io.codearte.nexus-staging" version "0.11.0"
+
+    id 'java'
+    id 'checkstyle'
+    id 'maven'
+    id 'maven-publish'
+    id 'signing'
+    id 'idea'
 }
 
-project.ext.pluginName = 'josm-atlas'
-project.ext.josmVersion = '12712'
-project.ext.josmMinVersion = '12712'
+// Define tool and dependency versions
+checkstyle {
+    toolVersion = '8.10.1'
+}
+josm { // see https://floscher.github.io/gradle-josm-plugin/kdoc/v0.3.4/gradle-josm-plugin/org.openstreetmap.josm.gradle.plugin.config/-josm-plugin-extension
+    josmCompileVersion '13959'
+    manifest.minJosmVersion = '13957'
+}
+ext.versions = [
+    'atlas': '5.5.0'
+]
 
-apply from: 'dependencies.gradle'
-apply plugin: 'java'
-apply plugin: 'checkstyle'
-apply plugin: 'maven'
-apply plugin: 'maven-publish'
-apply plugin: 'signing'
-apply plugin: "com.diffplug.gradle.spotless"
-apply plugin: 'idea'
+// corresponds to POM description/group
+description = "Atlas Library"
+group = 'org.openstreetmap.atlas'
+// for the version number see `gradle.properties`
+
+// JOSM plugin configuration
+archivesBaseName = 'josm-atlas'
+josm.manifest { // see https://floscher.github.io/gradle-josm-plugin/kdoc/v0.3.4/gradle-josm-plugin/org.openstreetmap.josm.gradle.plugin.config/-josm-manifest
+    author = 'James Gage'
+    canLoadAtRuntime = true
+    description = 'Allows you to view an Atlas file as a layer.'
+    iconPath = 'images/dialogs/world-3.png'
+    mainClass = 'org.openstreetmap.atlas.AtlasReader'
+    website = new URL('https://github.com/osmlab/josm-atlas')
+}
 
 sourceCompatibility=1.8
 targetCompatibility=1.8
 
-repositories
-{
+repositories {
     // For geotools
     maven { url "http://download.osgeo.org/webdav/geotools/" }
     mavenCentral()
+}
+
+dependencies {
+    packIntoJar "org.openstreetmap.atlas:atlas:${versions.atlas}"
 }
 
 idea {
@@ -42,15 +62,13 @@ idea {
 }
 
 spotless {
-   java {
-      importOrder(['static java', 'static javax', 'static org', 'static com', 'static scala', 'java', 'javax', 'org', 'com', 'scala'])
-      removeUnusedImports()
-      eclipse().configFile 'config/format/code_format.xml'
-   }
+    java {
+        importOrder 'static java', 'static javax', 'static org', 'static com', 'static scala', 'java', 'javax', 'org', 'com', 'scala'
+        removeUnusedImports()
+        eclipse().configFile 'config/format/code_format.xml'
+    }
 }
 
-// corresponds to POM description
-description = "Atlas Library"
 
 // This is to skip the tasks for which there is a skip<TaskName>=true environment variable
 def skippedTaskNames = System.getenv().findAll { key, value ->
@@ -59,105 +77,56 @@ def skippedTaskNames = System.getenv().findAll { key, value ->
 
 gradle.startParameter.excludedTaskNames += skippedTaskNames
 
-checkstyle
-{
-    toolVersion = versions.checkstyle
-}
-
-test
-{
-    testLogging
-    {
+test {
+    testLogging {
         events "passed", "skipped", "failed"
     }
 }
 
-configurations
-{
-    all
-    {
-        resolutionStrategy
-        {
-            force packages.atlas
-        }
-        exclude group: 'org.slf4j', module: 'slf4j-log4j12'
-    }
-}
-
-dependencies
-{
-    compile packages.atlas
-    compile files("lib/josm.jar")
-}
-
 tasks.withType(Test) {
-    reports.html.destination = file("${reporting.baseDir}/${name}")
+    // Use `build/reports/$testTaskName` instead of `build/reports/$sourceSetName`
+    reports.html.setDestination(file("${reporting.baseDir}/${name}"))
 }
 
-/**
- * Artifact related items
- */
-jar
-{
-    from{
-        configurations.compile.collect
-        {
-            it.isDirectory() ? it : zipTree(it).matching{
-                exclude
-                {
-                    it.path.contains('META-INF') && (it.path.endsWith('.SF') || it.path.endsWith('.DSA') || it.path.endsWith('.RSA'))
-                }
-            }
-        }
-    }
-    manifest
-    {
-        attributes("Author": "James Gage",
-        "Plugin-Class": "org.openstreetmap.atlas.AtlasReader",
-        "Plugin-Date": "2017-08-07T23:12:29.582966Z",
-        "Plugin-Description": "Allows you to view an Atlas file as a layer.",
-        "Plugin-Icon": "images/dialogs/world-3.png",
-        "Plugin-Link": "http://wiki.openstreetmap.org/index.php/JOSM/Plugins",
-        "Plugin-Mainversion": josmMinVersion,
-        "Plugin-Version": version,
-        "Plugin-Canloadatruntime": "true",
-        )
-    }
+task javadocJar(type: Jar) {
+    classifier = 'javadoc'
+    from javadoc
 }
-
-// Javadoc currently fails on a dependency issue
-//task javadocJar(type: Jar) {
-//    classifier = 'javadoc'
-//    from javadoc
-//}
 
 task sourcesJar(type: Jar) {
     classifier = 'sources'
     from sourceSets.main.allSource
 }
 
-artifacts
-{
-    archives /*javadocJar,*/ sourcesJar
+artifacts {
+    archives javadocJar, sourcesJar
 }
 
+if (System.env.containsKey("GPG_KEY_ID") && System.env.containsKey("GPG_PASSPHRASE") && System.env.containsKey("GPG_KEY_LOCATION")) {
+    ext."signing.keyId" = System.env.GPG_KEY_ID
+    ext."signing.password" = System.env.GPG_PASSPHRASE
+    ext."signing.secretKeyRingFile" = System.env.GPG_KEY_LOCATION
+}
+if (!ext.has("signing.keyId") || !ext.has("signing.password") || !ext.has("signing.secretKeyRingFile")) {
+    logger.warn "\nThe artifacts of this build are not signed.\nSet GPG_KEY_ID, GPG_PASSPHRASE and GPG_KEY_LOCATION to sign it.\n"
+    if (
+        System.env.containsKey("TRAVIS_REPO_SLUG")
+        && System.env.containsKey("TRAVIS_PULL_REQUEST")
+        && "osmlab/josm-atlas".equals(System.env.TRAVIS_REPO_SLUG)
+        && "false".equals(System.env.TRAVIS_PULL_REQUEST)
+    ) {
+        throw new GradleException("Builds for the repository ${System.env.TRAVIS_REPO_SLUG} must be signed!")
+    }
+} else {
+    signing {
+        sign configurations.archives
+    }
+}
 
 /**
  * JOSM SPECIFIC TASKS
  */
-import de.undercouch.gradle.tasks.download.Download
 import org.gradle.internal.os.OperatingSystem
-
-/**
- * This should only be run when we want to upgrade lib/josm.jar. This file does get committed,
- * so maintainers only need to run this when we want to support a newer version of JOSM.
- *
- * Therefore, this is not a default task.
- */
-task downloadJosm(type: Download) {
-    src 'http://josm.openstreetmap.de/download/josm-snapshot-' + josmVersion + '.jar'
-    dest 'lib/josm.jar'
-}
 
 /**
  * This task installs the plugin in your system's JOSM plugins directory.
@@ -168,21 +137,39 @@ task downloadJosm(type: Download) {
  *
  * ~/Library/JOSM/plugins/
  */
-task installPlugin(type: Copy, dependsOn: jar) {
+task installPlugin(type: Copy) {
     def destStr
     if(OperatingSystem.current().isMacOsX()) {
         destStr = "${System.getProperty('user.home')}/Library/JOSM/plugins"
     } else if(OperatingSystem.current().isWindows()) {
         destStr = "${System.getenv()['APPDATA']}/JOSM/plugins"
-    } else {
+    } else if (new File("${System.getProperty('user.home')}/.josm").exists()) {
         destStr = "${System.getProperty('user.home')}/.josm/plugins"
+    } else {
+        destStr = "${System.getProperty('user.home')}/.local/share/JOSM/plugins"
     }
-    println("Plugin JAR Archive Path: " + jar.archivePath)
-    println("Plugin JAR Destination Path: " + destStr)
-    from jar.archivePath
+    logger.lifecycle("Plugin JAR Archive Path: " + dist.outputs.files.asFileTree.files[0])
+    logger.lifecycle("Plugin JAR Destination Path: " + destStr)
+    from tasks.dist
     into destStr
-    rename {
-        pluginName + '.jar'
+    project.afterEvaluate {
+      finalizedBy activatePlugin
     }
 }
 
+/**
+ * Starts a JOSM instance and activates the plugin if it's not already active.
+ *
+ * The difference to the `runJosm` task is that there a completely clean instance is started up and a temporary JOSM_HOME is used.
+ * Here your default JOSM_HOME is used and you have to have JOSM already installed.
+ */
+task activatePlugin(type: Exec, dependsOn: installPlugin) {
+  def configFile = new File(buildDir, "addPluginConfig.xml")
+  doFirst {
+    configFile.withWriter { out ->
+      out.print "<?xml version=\"1.0\" encoding=\"UTF-8\"?><config><preferences operation=\"append\"><list key=\"plugins\"><entry value=\"${project.archivesBaseName}\"/></list></preferences></config>"
+    }
+  }
+  executable 'josm'
+  args '--load-preferences=' + configFile.toURI().toURL().toString()
+}
